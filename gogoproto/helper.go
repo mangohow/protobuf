@@ -28,8 +28,19 @@
 
 package gogoproto
 
-import google_protobuf "github.com/gogo/protobuf/protoc-gen-gogo/descriptor"
+import (
+	"bytes"
+	"fmt"
+	google_protobuf "github.com/gogo/protobuf/protoc-gen-gogo/descriptor"
+	"strings"
+	"unicode"
+)
 import proto "github.com/gogo/protobuf/proto"
+
+type TagKV struct {
+	Key string
+	Val string
+}
 
 func IsEmbed(field *google_protobuf.FieldDescriptorProto) bool {
 	return proto.GetBoolExtension(field.Options, E_Embed, false)
@@ -275,17 +286,37 @@ func GetJsonTag(field *google_protobuf.FieldDescriptorProto) *string {
 	return nil
 }
 
-func GetMoreTags(field *google_protobuf.FieldDescriptorProto) *string {
+func GetMoreTags(field *google_protobuf.FieldDescriptorProto) []TagKV {
 	if field == nil {
 		return nil
 	}
-	if field.Options != nil {
-		v, err := proto.GetExtension(field.Options, E_Moretags)
-		if err == nil && v.(*string) != nil {
-			return (v.(*string))
-		}
+	if field.Options == nil {
+		return nil
 	}
-	return nil
+
+	v, err := proto.GetExtension(field.Options, E_Moretags)
+	if err != nil || v.(*string) == nil {
+		return nil
+	}
+	// tags = "key1:val1 key2:val2"
+	// or
+	// tags = "key1:"val1" key2:"val2""
+	tags := v.(*string)
+	var kvs []TagKV
+	strs := strings.Split(*tags, " ")
+	for _, str := range strs {
+		kv := strings.Split(str, ":")
+		if len(kv) < 2 {
+			continue
+		}
+
+		kvs = append(kvs, TagKV{
+			Key: kv[0],
+			Val: strings.Trim(kv[1], `"`),
+		})
+	}
+
+	return kvs
 }
 
 type EnableFunc func(file *google_protobuf.FileDescriptorProto, message *google_protobuf.DescriptorProto) bool
@@ -412,4 +443,120 @@ func HasSizecache(file *google_protobuf.FileDescriptorProto, message *google_pro
 
 func HasUnkeyed(file *google_protobuf.FileDescriptorProto, message *google_protobuf.DescriptorProto) bool {
 	return proto.GetBoolExtension(message.Options, E_GoprotoUnkeyed, proto.GetBoolExtension(file.Options, E_GoprotoUnkeyedAll, true))
+}
+
+type TagSet struct {
+	tags []TagKV
+}
+
+func (t *TagSet) Add(kv TagKV) {
+	for i, tg := range t.tags {
+		if tg.Key == kv.Key {
+			t.tags[i] = kv
+			return
+		}
+	}
+	t.tags = append(t.tags, kv)
+}
+
+func (t *TagSet) AddSlice(kvs []TagKV) {
+	for _, tg := range kvs {
+		t.Add(tg)
+	}
+}
+
+func (t *TagSet) String() string {
+	if len(t.tags) == 0 {
+		return ""
+	}
+
+	builder := strings.Builder{}
+	for _, tag := range t.tags {
+		builder.WriteString(fmt.Sprintf("%s:%q ", tag.Key, tag.Val))
+	}
+
+	str := builder.String()
+	return str[:len(str)-1]
+}
+
+type TagNameFunc func(fieldName string) []TagKV
+
+func GetStructFieldTagNameFunc(message *google_protobuf.DescriptorProto) TagNameFunc {
+	extension, err := proto.GetExtension(message.Options, E_Tags)
+	if err != nil {
+		return nil
+	}
+	tags, ok := extension.([]*Tag)
+	if !ok {
+		return nil
+	}
+
+	return func(fieldName string) (kvs []TagKV) {
+		for _, tag := range tags {
+			fn := caseFuncMap[tag.GetCase()]
+			name := fn(fieldName)
+			kvs = append(kvs, TagKV{tag.GetName(), name})
+		}
+
+		return kvs
+	}
+}
+
+var (
+	caseFuncMap = map[TagCase]func(string) string{
+		TagCase_CamelCase:  ToCamelCase,
+		TagCase_SnakeCase:  ToSnakeCase,
+		TagCase_PascalCase: ToPascalCase,
+	}
+)
+
+// ToCamelCase 将一个字符串转换为 CamelCase 形式
+func ToCamelCase(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(parts) == 1 {
+		return strings.ToLower(parts[0][:1]) + parts[0][1:]
+	}
+
+	var buffer bytes.Buffer
+	for i, part := range parts {
+		if i == 0 {
+			buffer.WriteString(strings.ToLower(part))
+		} else {
+			buffer.WriteString(strings.Title(part))
+		}
+	}
+	return buffer.String()
+}
+
+// ToPascalCase 将一个字符串转换为 PascalCase 形式
+func ToPascalCase(s string) string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	var buffer bytes.Buffer
+	for _, part := range parts {
+		buffer.WriteString(strings.Title(part))
+	}
+	return buffer.String()
+}
+
+// ToSnakeCase 将一个字符串转换为 SnakeCase 形式
+func ToSnakeCase(s string) string {
+	var buffer bytes.Buffer
+	for i, r := range s {
+		if unicode.IsUpper(r) {
+			if i > 0 {
+				buffer.WriteRune('_')
+			}
+			buffer.WriteRune(unicode.ToLower(r))
+		} else {
+			buffer.WriteRune(r)
+		}
+	}
+	return buffer.String()
 }

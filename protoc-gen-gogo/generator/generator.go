@@ -35,9 +35,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /*
-	The code generator for the plugin for the Google protocol buffer compiler.
-	It generates Go code from the protocol buffer description files read by the
-	main routine.
+The code generator for the plugin for the Google protocol buffer compiler.
+It generates Go code from the protocol buffer description files read by the
+main routine.
 */
 package generator
 
@@ -1605,6 +1605,7 @@ func (g *Generator) generateEnum(enum *EnumDescriptor) {
 // The tag is a string like "varint,2,opt,name=fieldname,def=7" that
 // identifies details of the field for the protocol buffer marshaling and unmarshaling
 // code.  The fields are:
+//
 //	wire encoding
 //	protocol tag number
 //	opt,req,rep for optional, required, or repeated
@@ -1613,6 +1614,7 @@ func (g *Generator) generateEnum(enum *EnumDescriptor) {
 //	enum= the name of the enum type if it is an enum-typed field.
 //	proto3 if this field is in a proto3 message
 //	def= string representation of the default value, if any.
+//
 // The default value must be in a representation that can be used at run-time
 // to generate the default value. Thus bools become 0 and 1, for instance.
 func (g *Generator) goTag(message *Descriptor, field *descriptor.FieldDescriptorProto, wiretype string) string {
@@ -2826,6 +2828,9 @@ func (g *Generator) generateMessage(message *Descriptor) {
 
 	mapFieldTypes := make(map[*descriptor.FieldDescriptorProto]string) // keep track of the map fields to be added later
 
+	// 获取struct tag func
+	tagFunc := gogoproto.GetStructFieldTagNameFunc(message.DescriptorProto)
+
 	for i, field := range message.Field {
 		// Allocate the getter and the field at the same time so name
 		// collisions create field/method consistent names.
@@ -2846,16 +2851,25 @@ func (g *Generator) generateMessage(message *Descriptor) {
 		if !gogoproto.IsNullable(field) && !repeatedNativeType {
 			jsonTag = jsonName
 		}
+
+		// 获取message option中添加的tag
+		structTags := gogoproto.TagSet{}
+		if tagFunc != nil {
+			fieldTags := tagFunc(base)
+			structTags.AddSlice(fieldTags)
+		}
+
 		gogoJsonTag := gogoproto.GetJsonTag(field)
 		if gogoJsonTag != nil {
 			jsonTag = *gogoJsonTag
 		}
+
+		// 获取field option中添加的tag
 		gogoMoreTags := gogoproto.GetMoreTags(field)
-		moreTags := ""
-		if gogoMoreTags != nil {
-			moreTags = " " + *gogoMoreTags
-		}
-		tag := fmt.Sprintf("protobuf:%s json:%q%s", g.goTag(message, field, wiretype), jsonTag, moreTags)
+		structTags.AddSlice(gogoMoreTags)
+
+		moreTags := structTags.String()
+		tag := fmt.Sprintf("protobuf:%s json:%q %s", g.goTag(message, field, wiretype), jsonTag, moreTags)
 		if *field.Type == descriptor.FieldDescriptorProto_TYPE_MESSAGE && gogoproto.IsEmbed(field) {
 			fieldName = ""
 		}
